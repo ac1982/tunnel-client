@@ -141,3 +141,47 @@ while running:
 """
     )
     return script
+
+
+def test_remote_start_retries_truncated_health_response(tmp_path: Path) -> None:
+    import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+    from mcp_tunnel_client_proxy import start_mcp_tunnel_client
+
+    class Handler(BaseHTTPRequestHandler):
+        requests = 0
+
+        def do_GET(self):
+            Handler.requests += 1
+            self.send_response(200)
+            self.send_header("Content-Length", "100" if Handler.requests == 1 else "2")
+            self.end_headers()
+            self.wfile.write(b"ok")
+            self.close_connection = True
+
+        def log_message(self, *_args):
+            pass
+
+    server = HTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    url = f"http://127.0.0.1:{server.server_port}"
+    script = tmp_path / "health_client.py"
+    script.write_text(
+        "import sys, time\nfrom pathlib import Path\n"
+        f"Path(sys.argv[sys.argv.index('--health.url-file') + 1]).write_text({url!r})\n"
+        "time.sleep(30)\n",
+        encoding="utf-8",
+    )
+    try:
+        with start_mcp_tunnel_client(MCPTunnelClientRunOptions(
+            command=[sys.executable, str(script)], tunnel_id="test", startup_timeout_seconds=3,
+        )) as client:
+            assert client.health_url == url
+            assert client.process.poll() is None
+            assert Handler.requests >= 2
+        assert client.process.poll() is not None
+    finally:
+        server.shutdown()
+        thread.join()
+        server.server_close()

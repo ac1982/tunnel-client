@@ -320,7 +320,7 @@ def _health_ready(base_url: str) -> bool:
         response = connection.getresponse()
         response.read()
         return 200 <= response.status < 300
-    except OSError:
+    except (OSError, http.client.HTTPException):
         return False
     finally:
         connection.close()
